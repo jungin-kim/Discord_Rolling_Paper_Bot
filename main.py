@@ -1,5 +1,6 @@
 import discord
 from discord import app_commands
+from discord.ext import tasks
 import sqlite3
 import datetime
 import io
@@ -27,14 +28,6 @@ class MyClient(discord.Client):
     def init_db(self):
         conn = sqlite3.connect('rolling_paper.db')
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS messages
-                     (sender_id INTEGER, receiver_id INTEGER, content TEXT, timestamp TEXT, sender_name TEXT, receiver_name TEXT)''')
-        conn.commit()
-        conn.close()
-
-def init_db(self):
-        conn = sqlite3.connect('rolling_paper.db')
-        c = conn.cursor()
         
         # 1. 메시지 테이블
         c.execute('''CREATE TABLE IF NOT EXISTS messages
@@ -51,7 +44,7 @@ def init_db(self):
         conn.commit()
         conn.close()
 
-    # 매달 1일 자동 초기화 체크 루프 (12시간마다 실행)
+	# [NEW] 매달 1일 자동 초기화 체크 루프 (1시간마다 실행)
     @tasks.loop(hours=12)
     async def check_monthly_reset(self):
         now = datetime.datetime.now()
