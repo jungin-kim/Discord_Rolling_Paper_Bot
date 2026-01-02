@@ -32,17 +32,81 @@ class MyClient(discord.Client):
         conn.commit()
         conn.close()
 
+def init_db(self):
+        conn = sqlite3.connect('rolling_paper.db')
+        c = conn.cursor()
+        
+        # 1. 메시지 테이블
+        c.execute('''CREATE TABLE IF NOT EXISTS messages
+                     (sender_id INTEGER, receiver_id INTEGER, content TEXT, timestamp TEXT, sender_name TEXT, receiver_name TEXT)''')
+        
+        # 2. [NEW] 설정 테이블 (자동초기화 여부, 마지막 실행 날짜 저장)
+        c.execute('''CREATE TABLE IF NOT EXISTS settings
+                     (key TEXT PRIMARY KEY, value TEXT)''')
+        
+        # 기본 설정값이 없으면 생성 (기본값: OFF)
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ('auto_reset', 'OFF'))
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ('last_reset_month', 'None'))
+        
+        conn.commit()
+        conn.close()
+
+    # 매달 1일 자동 초기화 체크 루프 (12시간마다 실행)
+    @tasks.loop(hours=12)
+    async def check_monthly_reset(self):
+        now = datetime.datetime.now()
+        
+        # 오늘이 1일이 아니면 패스
+        if now.day != 1:
+            return
+
+        conn = sqlite3.connect('rolling_paper.db')
+        c = conn.cursor()
+        
+        # 설정값 읽어오기
+        c.execute("SELECT value FROM settings WHERE key='auto_reset'")
+        auto_reset = c.fetchone()[0]
+        
+        c.execute("SELECT value FROM settings WHERE key='last_reset_month'")
+        last_reset = c.fetchone()[0]
+        
+        current_month_str = now.strftime("%Y-%m") # 예: 2026-02
+
+        # 조건: 자동초기화가 ON이고, 이번 달에 아직 초기화를 안 했으면 실행
+        if auto_reset == 'ON' and last_reset != current_month_str:
+            print(f"[알림] 매달 1일 자동 초기화가 실행됩니다. ({current_month_str})")
+            
+            # 메시지 삭제
+            c.execute("DELETE FROM messages")
+            
+            # 마지막 실행 기록 업데이트
+            c.execute("UPDATE settings SET value = ? WHERE key = 'last_reset_month'", (current_month_str,))
+            conn.commit()
+            
+        conn.close()
+
+    @check_monthly_reset.before_loop
+    async def before_check(self):
+        await self.wait_until_ready() # 봇이 켜질 때까지 대기
+
 client = MyClient()
 
 # ==========================================
 # 일반 유저 기능
 # ==========================================
 
-# 1. 롤링페이퍼 쓰기
-@client.tree.command(name="롤링페이퍼쓰기", description="익명으로 친구에게 메시지를 남깁니다.")
+# 1. 롤링페이퍼 쓰기 (글자수 제한 추가됨)
+# description에 500자 제한 문구 추가
+@client.tree.command(name="롤링페이퍼쓰기", description="익명으로 메시지를 남깁니다. (최대 500자)")
 async def write_paper(interaction: discord.Interaction, receiver: discord.Member, content: str):
     await interaction.response.defer(ephemeral=True)
 
+    # [NEW] 글자 수 제한 (공백 포함 500자)
+    if len(content) > 500:
+        await interaction.followup.send(f"⚠️ 메시지가 너무 깁니다! (현재 {len(content)}자)\n공백 포함 **500자 이내**로 작성해주세요.")
+        return
+
+    # 예외 처리: 본인 및 봇 방지
     if receiver.id == interaction.user.id:
         await interaction.followup.send("자기 자신에게는 롤링페이퍼를 쓸 수 없습니다 😅")
         return
@@ -52,6 +116,7 @@ async def write_paper(interaction: discord.Interaction, receiver: discord.Member
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # 1. DB에 메시지 저장
     conn = sqlite3.connect('rolling_paper.db')
     c = conn.cursor()
     c.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)", 
@@ -59,7 +124,26 @@ async def write_paper(interaction: discord.Interaction, receiver: discord.Member
     conn.commit()
     conn.close()
 
-    await interaction.followup.send(f"✅ **{receiver.display_name}**님에게 익명으로 메시지를 남겼습니다!")
+    # 2. 상대방에게 DM 알림 발송 시도
+    dm_status_msg = ""
+    try:
+        embed = discord.Embed(
+            title="📨 익명 롤링페이퍼 도착!",
+            description=f"**{interaction.guild.name}** 서버에서 누군가 회원님께 마음을 전했어요.\n서버로 돌아가 `/롤링페이퍼확인` 명령어를 입력해보세요!",
+            color=0xffd700
+        )
+        embed.set_footer(text="이 알림은 익명으로 발송되었습니다.")
+        
+        await receiver.send(embed=embed)
+        dm_status_msg = " (상대방에게 DM 알림도 보냈어요!)"
+        
+    except discord.Forbidden:
+        dm_status_msg = "\n(하지만 상대방이 DM을 막아둬서 알림은 못 보냈어요. 메시지는 잘 저장됐습니다!)"
+    except Exception as e:
+        dm_status_msg = f"\n(DM 전송 중 오류 발생: {e})"
+
+    # 3. 작성자에게 결과 통보
+    await interaction.followup.send(f"✅ **{receiver.display_name}**님에게 익명으로 메시지를 남겼습니다!{dm_status_msg}")
 
 
 # 2. 롤링페이퍼 확인
@@ -93,10 +177,15 @@ async def check_paper(interaction: discord.Interaction):
 
 # 3. [관리자] 전체 방송
 @client.tree.command(name="롤링페이퍼전체쓰기", description="[관리자] 서버의 모든 멤버(본인 제외)에게 롤링페이퍼를 씁니다.")
-@app_commands.default_permissions(administrator=True) # 이 줄이 명령어를 안 보이게 만듭니다
+@app_commands.default_permissions(administrator=True) 
 async def broadcast_paper(interaction: discord.Interaction, content: str):
     await interaction.response.defer(ephemeral=True)
     
+    # 전체 방송도 500자 제한 적용 (선택사항, 필요 없으면 빼셔도 됩니다)
+    if len(content) > 500:
+        await interaction.followup.send(f"⚠️ 메시지가 너무 깁니다! ({len(content)}자/500자)")
+        return
+
     members = interaction.guild.members
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     count = 0
@@ -117,7 +206,7 @@ async def broadcast_paper(interaction: discord.Interaction, content: str):
 
 # 4. [관리자] 로그 확인
 @client.tree.command(name="롤링페이퍼로그", description="[관리자] 작성된 모든 롤링페이퍼 로그를 확인합니다.")
-@app_commands.default_permissions(administrator=True) # 관리자 권한 없으면 숨김
+@app_commands.default_permissions(administrator=True)
 async def check_logs(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -140,9 +229,9 @@ async def check_logs(interaction: discord.Interaction):
     
     await interaction.followup.send("로그 파일을 생성했습니다.", file=discord_file)
 
-# 5. [관리자] DB 초기화
-@client.tree.command(name="롤링페이퍼초기화", description="[관리자] 저장된 모든 메시지를 영구 삭제합니다.")
-@app_commands.default_permissions(administrator=True) # 관리자 권한 없으면 숨김
+# 5. [관리자] DB 초기화 (수동)
+@client.tree.command(name="롤링페이퍼초기화", description="[관리자] 저장된 모든 메시지를 즉시 삭제합니다.")
+@app_commands.default_permissions(administrator=True)
 async def reset_db(interaction: discord.Interaction):
     conn = sqlite3.connect('rolling_paper.db')
     c = conn.cursor()
@@ -151,5 +240,27 @@ async def reset_db(interaction: discord.Interaction):
     conn.close()
     
     await interaction.response.send_message("⚠️ 모든 롤링페이퍼 데이터가 초기화되었습니다.", ephemeral=True)
+
+# 6. [NEW] [관리자] 자동 초기화 설정 토글
+@client.tree.command(name="자동초기화설정", description="[관리자] 매달 1일 데이터 자동 초기화 기능을 켜거나 끕니다.")
+@app_commands.default_permissions(administrator=True)
+async def toggle_auto_reset(interaction: discord.Interaction):
+    conn = sqlite3.connect('rolling_paper.db')
+    c = conn.cursor()
+    
+    # 현재 상태 확인
+    c.execute("SELECT value FROM settings WHERE key='auto_reset'")
+    current_status = c.fetchone()[0]
+    
+    # 상태 반전 (ON <-> OFF)
+    new_status = 'OFF' if current_status == 'ON' else 'ON'
+    
+    # 저장
+    c.execute("UPDATE settings SET value = ? WHERE key = 'auto_reset'", (new_status,))
+    conn.commit()
+    conn.close()
+    
+    status_emoji = "🟢" if new_status == 'ON' else "🔴"
+    await interaction.response.send_message(f"{status_emoji} 매달 1일 자동 초기화 기능이 **{new_status}** 상태로 변경되었습니다.", ephemeral=True)
 
 client.run(TOKEN)
