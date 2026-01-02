@@ -34,7 +34,7 @@
 5. 같은 페이지 스크롤을 내려 **Privileged Gateway Intents** 섹션에서 아래 두 가지를 **반드시 켜주세요**. (이걸 안 켜면 봇이 작동하지 않습니다.)
    - ✅ **Server Members Intent**
    - ✅ **Message Content Intent** (선택 권장)
-6. 맨 아래 **[Save Changes]**를 눌러 저장합니다.
+6. 맨 아래 [Save Changes]를 눌러 저장합니다.
 
 ### 2단계: 봇을 내 서버에 초대하기
 1. 왼쪽 메뉴에서 **[OAuth2]** -> https://www.homedepot.com/b/Outdoors-Outdoor-Power-Equipment-Generators/N-5yc1vZbx8l를 클릭합니다.
