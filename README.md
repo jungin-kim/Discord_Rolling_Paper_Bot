@@ -90,5 +90,5 @@ Q. 'Server Members Intent' 에러가 떠요!
 1단계의 5번 항목(Intents 켜기)을 수행했는지 다시 확인해주세요.
 
 ### 📜 License
-이 프로젝트는 MIT License를 따릅니다.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
    
